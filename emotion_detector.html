@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emotion Detection AI</title>
+
+    <script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.min.js"></script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            color: #4CAF50;
+        }
+
+        p {
+            margin-bottom: 20px;
+            color: #aaaaaa;
+        }
+
+        .video-container {
+            position: relative;
+            display: inline-block;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
+            background-color: #000;
+            max-width: 90vw;
+        }
+
+        video {
+            display: block;
+            max-width: 100%;
+            transform: scaleX(-1); /* Mirrors the video like a normal webcam */
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform: scaleX(-1); /* keep overlay aligned with mirrored video */
+        }
+
+        .emotion-box {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.75);
+            padding: 10px 30px;
+            border-radius: 30px;
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: #fff;
+            border: 2px solid #4CAF50;
+            text-transform: capitalize;
+            white-space: nowrap;
+            z-index: 2;
+        }
+
+        #startBtn {
+            margin-top: 20px;
+            padding: 12px 28px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            background-color: #4CAF50;
+            color: #fff;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        #startBtn:hover {
+            background-color: #45a049;
+        }
+
+        #startBtn:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Real-Time Emotion Detector</h1>
+        <p id="statusText">Click "Start Camera" and allow access to begin.</p>
+
+        <div class="video-container">
+            <video id="video" width="720" height="560" autoplay muted playsinline></video>
+            <canvas id="overlay"></canvas>
+            <div id="emotion-display" class="emotion-box" style="display:none;">Loading...</div>
+        </div>
+
+        <br>
+        <button id="startBtn">Start Camera</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const overlay = document.getElementById('overlay');
+        const emotionDisplay = document.getElementById('emotion-display');
+        const statusText = document.getElementById('statusText');
+        const startBtn = document.getElementById('startBtn');
+
+        // Reliable CDN mirror of the model weights (proper CORS headers, no rate limiting issues)
+        const MODEL_URL = 'https://cdn.jsdelivr.net/gh/vladmandic/face-api/model/';
+
+        let modelsLoaded = false;
+        let detectionInterval = null;
+
+        async function loadModels() {
+            if (modelsLoaded) return;
+            statusText.innerText = 'Loading AI models...';
+            await Promise.all([
+                faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL)
+            ]);
+            modelsLoaded = true;
+        }
+
+        async function startCamera() {
+            startBtn.disabled = true;
+            startBtn.innerText = 'Starting...';
+
+            try {
+                await loadModels();
+            } catch (err) {
+                console.error('Model loading error:', err);
+                statusText.innerText = 'Error loading AI models. Check your internet connection and refresh.';
+                startBtn.disabled = false;
+                startBtn.innerText = 'Retry';
+                return;
+            }
+
+            const constraints = {
+                video: {
+                    width: { ideal: 720 },
+                    height: { ideal: 560 },
+                    facingMode: 'user'
+                }
+            };
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                await video.play();
+            } catch (err) {
+                console.error('Camera access error:', err);
+                statusText.innerText = 'Camera access denied or unavailable. Please allow camera permissions and retry.';
+                startBtn.disabled = false;
+                startBtn.innerText = 'Retry';
+                return;
+            }
+
+            startBtn.style.display = 'none';
+            statusText.innerText = 'Live detection running.';
+            emotionDisplay.style.display = 'block';
+            emotionDisplay.innerText = 'Detecting...';
+        }
+
+        startBtn.addEventListener('click', startCamera);
+
+        video.addEventListener('playing', () => {
+            // Match overlay canvas size to the actual video stream size
+            const displaySize = { width: video.videoWidth, height: video.videoHeight };
+            overlay.width = displaySize.width;
+            overlay.height = displaySize.height;
+            overlay.style.width = video.clientWidth + 'px';
+            overlay.style.height = video.clientHeight + 'px';
+
+            if (detectionInterval) clearInterval(detectionInterval);
+
+            detectionInterval = setInterval(async () => {
+                if (video.paused || video.ended) return;
+
+                const detections = await faceapi
+                    .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                    .withFaceLandmarks()
+                    .withFaceExpressions();
+
+                const ctx = overlay.getContext('2d');
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+                const resized = faceapi.resizeResults(detections, displaySize);
+                faceapi.draw.drawDetections(overlay, resized);
+                faceapi.draw.drawFaceLandmarks(overlay, resized);
+
+                if (detections && detections.length > 0) {
+                    const expressions = detections[0].expressions;
+
+                    let highestEmotion = '';
+                    let highestValue = 0;
+
+                    for (const emotion in expressions) {
+                        if (expressions[emotion] > highestValue) {
+                            highestValue = expressions[emotion];
+                            highestEmotion = emotion;
+                        }
+                    }
+
+                    const confidence = Math.round(highestValue * 100);
+                    emotionDisplay.innerText = `${highestEmotion} (${confidence}%)`;
+                    changeColorByEmotion(highestEmotion);
+                } else {
+                    emotionDisplay.innerText = 'No face detected';
+                    emotionDisplay.style.borderColor = '#ff4444';
+                    emotionDisplay.style.color = '#ff4444';
+                }
+            }, 150);
+        });
+
+        function changeColorByEmotion(emotion) {
+            const colors = {
+                happy: '#4CAF50',      // Green
+                sad: '#2196F3',        // Blue
+                angry: '#F44336',      // Red
+                surprised: '#FFEB3B',  // Yellow
+                disgusted: '#9C27B0',  // Purple
+                fearful: '#FF9800',    // Orange
+                neutral: '#FFFFFF'     // White
+            };
+
+            emotionDisplay.style.borderColor = colors[emotion] || '#FFFFFF';
+            emotionDisplay.style.color = colors[emotion] || '#FFFFFF';
+        }
+
+        window.addEventListener('beforeunload', () => {
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html>
